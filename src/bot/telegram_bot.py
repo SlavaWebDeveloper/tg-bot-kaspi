@@ -575,7 +575,8 @@ class TelegramBot:
         if callback_data.startswith("download_waybill:"):
             order_code = callback_data.split(":")[1]
             
-            await query.edit_message_text(
+            # Отправляем новое сообщение
+            status_msg = await query.message.reply_text(
                 f"⏳ Получаю накладную для заказа #{order_code}...",
                 parse_mode='HTML'
             )
@@ -583,10 +584,11 @@ class TelegramBot:
             # Сначала пробуем из БД
             await self.send_waybill_from_db(order_code, query.message.chat_id)
             
-            await query.edit_message_text(
-                f"✅ Накладная для заказа #{order_code} отправлена",
-                parse_mode='HTML'
-            )
+            # Удаляем статусное сообщение
+            await status_msg.delete()
+            
+            # Подтверждаем нажатие кнопки
+            await query.answer("✅ Накладная отправлена")
         
         # Обработка принятия заказа
         elif callback_data.startswith("accept_order:"):
@@ -695,30 +697,34 @@ class TelegramBot:
     async def handle_accept_order(self, query, order_id: str, order_code: str):
         """Обработка принятия заказа"""
         try:
-            await query.edit_message_text(
+            # Отправляем новое сообщение
+            await query.message.reply_text(
                 f"⏳ Принимаю заказ #{order_code}...",
                 parse_mode='HTML'
             )
+            
+            # Удаляем кнопки с исходного сообщения
+            await query.edit_message_reply_markup(reply_markup=None)
             
             # Принимаем заказ через API
             result = await self.order_service.accept_order(order_id, order_code)
             
             if result:
-                await query.edit_message_text(
+                await query.message.reply_text(
                     f"✅ <b>Заказ #{order_code} успешно принят!</b>\n\n"
                     f"Статус изменен на: ACCEPTED_BY_MERCHANT",
                     parse_mode='HTML'
                 )
                 logger.info(f"Заказ {order_code} принят через бота")
             else:
-                await query.edit_message_text(
+                await query.message.reply_text(
                     f"❌ Ошибка при принятии заказа #{order_code}\n"
                     f"Попробуйте позже или проверьте статус в личном кабинете",
                     parse_mode='HTML'
                 )
         except Exception as e:
             logger.error(f"Ошибка при принятии заказа {order_code}: {e}")
-            await query.edit_message_text(
+            await query.message.reply_text(
                 f"❌ Произошла ошибка при принятии заказа #{order_code}:\n{str(e)}",
                 parse_mode='HTML'
             )
@@ -726,10 +732,14 @@ class TelegramBot:
     async def handle_cancel_order(self, query, order_id: str, order_code: str, reason: str):
         """Обработка отмены заказа (только для админа)"""
         try:
-            await query.edit_message_text(
+            # Отправляем новое сообщение
+            await query.message.reply_text(
                 f"⏳ Отменяю заказ #{order_code}...",
                 parse_mode='HTML'
             )
+            
+            # Удаляем кнопки с исходного сообщения
+            await query.edit_message_reply_markup(reply_markup=None)
             
             # Отменяем заказ через API
             result = await self.order_service.cancel_order(order_id, order_code, reason)
@@ -741,7 +751,7 @@ class TelegramBot:
                     'MERCHANT_OUT_OF_STOCK': 'Товара нет в наличии'
                 }.get(reason, reason)
                 
-                await query.edit_message_text(
+                await query.message.reply_text(
                     f"✅ <b>Заказ #{order_code} отменен</b>\n\n"
                     f"Причина: {reason_text}\n"
                     f"Статус изменен на: CANCELLED",
@@ -749,14 +759,14 @@ class TelegramBot:
                 )
                 logger.info(f"Заказ {order_code} отменен администратором. Причина: {reason}")
             else:
-                await query.edit_message_text(
+                await query.message.reply_text(
                     f"❌ Ошибка при отмене заказа #{order_code}\n"
                     f"Возможно заказ уже в другом статусе",
                     parse_mode='HTML'
                 )
         except Exception as e:
             logger.error(f"Ошибка при отмене заказа {order_code}: {e}")
-            await query.edit_message_text(
+            await query.message.reply_text(
                 f"❌ Произошла ошибка при отмене заказа #{order_code}:\n{str(e)}",
                 parse_mode='HTML'
             )
@@ -764,16 +774,20 @@ class TelegramBot:
     async def handle_create_waybill(self, query, order_id: str, order_code: str):
         """Обработка формирования накладной"""
         try:
-            await query.edit_message_text(
+            # Отправляем новое сообщение вместо редактирования
+            await query.message.reply_text(
                 f"⏳ Проверяю статус заказа #{order_code}...",
                 parse_mode='HTML'
             )
+            
+            # Удаляем кнопки с исходного сообщения
+            await query.edit_message_reply_markup(reply_markup=None)
             
             # Проверяем текущий статус заказа
             current_status = await self.order_service.check_order_status(order_id, order_code)
             
             if not current_status:
-                await query.edit_message_text(
+                await query.message.reply_text(
                     f"❌ Не удалось получить информацию о заказе #{order_code}",
                     parse_mode='HTML'
                 )
@@ -795,7 +809,7 @@ class TelegramBot:
                         InlineKeyboardButton("📄 Скачать онлайн", url=waybill_url),
                         InlineKeyboardButton("📥 Получить PDF", callback_data=f"download_waybill:{order_code}")
                     ]]
-                    await query.edit_message_text(
+                    await query.message.reply_text(
                         message,
                         parse_mode='HTML',
                         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -806,14 +820,14 @@ class TelegramBot:
                         await self.download_and_send_waybill(waybill_url, order_code, query.message.chat_id)
                 else:
                     message += "\nНакладная будет доступна в личном кабинете Kaspi."
-                    await query.edit_message_text(message, parse_mode='HTML')
+                    await query.message.reply_text(message, parse_mode='HTML')
                 
                 logger.info(f"Накладная для заказа {order_code} уже была сформирована")
                 return
             
             # Проверяем что заказ принят
             if status == 'APPROVED_BY_BANK':
-                await query.edit_message_text(
+                await query.message.reply_text(
                     f"⚠️ <b>Заказ #{order_code} еще не принят</b>\n\n"
                     f"Сначала примите заказ, затем можно формировать накладную.",
                     parse_mode='HTML'
@@ -822,7 +836,7 @@ class TelegramBot:
             
             # Проверяем что заказ не завершен
             if status in ['COMPLETED', 'CANCELLED', 'CANCELLING']:
-                await query.edit_message_text(
+                await query.message.reply_text(
                     f"❌ <b>Заказ #{order_code} уже завершен</b>\n\n"
                     f"Статус: {status}\n"
                     f"Формирование накладной невозможно.",
@@ -831,7 +845,7 @@ class TelegramBot:
                 return
             
             # Формируем накладную
-            await query.edit_message_text(
+            await query.message.reply_text(
                 f"⏳ Формирую накладную для заказа #{order_code}...",
                 parse_mode='HTML'
             )
@@ -859,7 +873,7 @@ class TelegramBot:
                         InlineKeyboardButton("📄 Скачать онлайн", url=waybill_url),
                         InlineKeyboardButton("📥 Получить PDF", callback_data=f"download_waybill:{order_code}")
                     ]]
-                    await query.edit_message_text(
+                    await query.message.reply_text(
                         success_message,
                         parse_mode='HTML',
                         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -869,21 +883,21 @@ class TelegramBot:
                     await self.download_and_send_waybill(waybill_url, order_code, query.message.chat_id)
                 else:
                     success_message += "Накладная будет доступна в личном кабинете Kaspi через несколько минут."
-                    await query.edit_message_text(
+                    await query.message.reply_text(
                         success_message,
                         parse_mode='HTML'
                     )
                 
                 logger.info(f"Накладная для заказа {order_code} сформирована через бота")
             else:
-                await query.edit_message_text(
+                await query.message.reply_text(
                     f"❌ Ошибка при формировании накладной для заказа #{order_code}\n"
                     f"Проверьте статус в личном кабинете",
                     parse_mode='HTML'
                 )
         except Exception as e:
             logger.error(f"Ошибка при формировании накладной {order_code}: {e}")
-            await query.edit_message_text(
+            await query.message.reply_text(
                 f"❌ Произошла ошибка при формировании накладной #{order_code}:\n{str(e)}",
                 parse_mode='HTML'
             )
