@@ -34,6 +34,10 @@ def setup_logging():
     logging.getLogger('httpx').setLevel(logging.WARNING)
     logging.getLogger('telegram').setLevel(logging.WARNING)
     logging.getLogger('apscheduler').setLevel(logging.WARNING)
+    
+    # Убираем детальные логи из order_service (оставляем только важное)
+    logging.getLogger('src.kaspi.order_service').setLevel(logging.WARNING)
+    logging.getLogger('src.kaspi.api_client').setLevel(logging.WARNING)
 
 
 def main():
