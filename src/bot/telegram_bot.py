@@ -764,7 +764,7 @@ class TelegramBot:
             else:
                 await query.message.reply_text(
                     f"❌ Ошибка при формировании накладной для заказа #{order_code}\n"
-                    f"Проверьте статус в личном кабинете",
+                    f"Возможно это прямая доставка, накладной при этом нет. Либо проверьте статус в личном кабинете",
                     parse_mode='HTML'
                 )
         except Exception as e:
