@@ -314,49 +314,6 @@ class KaspiAPIClient:
             logger.error(f"Ошибка при принятии заказа {order_id}: {e}")
             raise
     
-    async def cancel_order(self, order_id: str, order_code: str, cancellation_reason: str, comment: str = "") -> Dict:
-        """
-        Отменить заказ
-        
-        Args:
-            order_id: ID заказа
-            order_code: Код заказа
-            cancellation_reason: Причина отмены (BUYER_CANCELLATION_BY_MERCHANT, BUYER_NOT_REACHABLE, MERCHANT_OUT_OF_STOCK)
-            comment: Комментарий при отмене (не более 1000 символов)
-        
-        Returns:
-            Словарь с обновленными данными заказа
-        """
-        payload = {
-            "data": {
-                "type": "orders",
-                "id": order_id,
-                "attributes": {
-                    "code": order_code,
-                    "status": "CANCELLED",
-                    "cancellationReason": cancellation_reason
-                }
-            }
-        }
-        
-        # Добавляем комментарий если указан
-        if comment and len(comment) <= 1000:
-            payload["data"]["attributes"]["cancellationComment"] = comment
-        
-        try:
-            async with httpx.AsyncClient(timeout=60.0, verify=True) as client:
-                response = await client.post(
-                    f"{self.base_url}/orders",
-                    headers=self.headers,
-                    json=payload
-                )
-                response.raise_for_status()
-                logger.info(f"Заказ {order_code} отменен. Причина: {cancellation_reason}")
-                return response.json()
-        except Exception as e:
-            logger.error(f"Ошибка при отмене заказа {order_id}: {e}")
-            raise
-    
     async def change_order_status(self, order_id: str, status: str, number_of_space: int = 1) -> Dict:
         """
         Изменить статус заказа (например, для формирования накладной)

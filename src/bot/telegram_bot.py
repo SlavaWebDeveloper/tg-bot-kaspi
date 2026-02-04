@@ -398,7 +398,6 @@ class TelegramBot:
         if user_id in self.admin_ids:
             help_text += (
                 "\n\n<b>⚙️ Команды администратора:</b>\n"
-                "/cancel_order - Отменить заказ\n"
                 "/clear_db - Очистить базу данных"
             )
         
@@ -421,49 +420,6 @@ class TelegramBot:
             await update.message.reply_text(message, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Ошибка при получении активных заказов: {e}")
-            await update.message.reply_text(
-                "❌ Произошла ошибка при получении списка заказов"
-            )
-    
-    async def cancel_order_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /cancel_order - отменить заказ (только для админа)"""
-        user_id = update.effective_user.id
-        
-        # Проверяем права админа
-        if user_id not in self.admin_ids:
-            return  # Просто игнорируем команду для обычных пользователей
-        
-        try:
-            orders = await self.order_service.get_active_orders()
-            
-            if not orders:
-                await update.message.reply_text(
-                    "📋 Нет активных заказов для отмены",
-                    parse_mode='HTML'
-                )
-                return
-            
-            # Создаем кнопки для каждого заказа
-            keyboard = []
-            for order in orders:
-                keyboard.append([
-                    InlineKeyboardButton(
-                        f"❌ Заказ #{order['code']} - {order['total_price']:,.0f} ₸",
-                        callback_data=f"cancel_order_select:{order['id']}:{order['code']}"
-                    )
-                ])
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(
-                f"⚠️ <b>Выберите заказ для отмены:</b>\n\n"
-                f"Найдено активных заказов: {len(orders)}",
-                parse_mode='HTML',
-                reply_markup=reply_markup
-            )
-            
-        except Exception as e:
-            logger.error(f"Ошибка при получении списка для отмены: {e}")
             await update.message.reply_text(
                 "❌ Произошла ошибка при получении списка заказов"
             )
@@ -595,7 +551,7 @@ class TelegramBot:
             _, order_id, order_code = callback_data.split(":")
             await self.handle_accept_order(query, order_id, order_code)
         
-        # Обработка формирования накладной - с подтверждением
+        # Обработка формирования накладной - отправляем НОВОЕ сообщение с подтверждением
         elif callback_data.startswith("waybill:"):
             _, order_id, order_code = callback_data.split(":")
             # Сохраняем для подтверждения
@@ -612,7 +568,8 @@ class TelegramBot:
                 ]
             ]
             
-            await query.edit_message_text(
+            # ОТПРАВЛЯЕМ НОВОЕ СООБЩЕНИЕ вместо редактирования существующего
+            await query.message.reply_text(
                 f"⚠️ <b>Подтверждение формирования накладной</b>\n\n"
                 f"Заказ: #{order_code}\n\n"
                 f"После формирования накладной:\n"
@@ -628,51 +585,11 @@ class TelegramBot:
         elif callback_data.startswith("confirm_waybill:"):
             _, order_id, order_code = callback_data.split(":")
             self.pending_confirmations.pop(user_id, None)
+            
+            # Удаляем кнопки с сообщения подтверждения
+            await query.edit_message_reply_markup(reply_markup=None)
+            
             await self.handle_create_waybill(query, order_id, order_code)
-        
-        # Выбор заказа для отмены (только админ)
-        elif callback_data.startswith("cancel_order_select:"):
-            if user_id not in self.admin_ids:
-                await query.answer("❌ Доступ запрещен", show_alert=True)
-                return
-            
-            _, order_id, order_code = callback_data.split(":")
-            
-            # Сохраняем для подтверждения
-            self.pending_confirmations[user_id] = {
-                'action': 'cancel_order',
-                'order_id': order_id,
-                'order_code': order_code
-            }
-            
-            # Показываем причины отмены
-            keyboard = [
-                [InlineKeyboardButton("👤 Отказ покупателя", callback_data=f"cancel_reason:BUYER_CANCELLATION_BY_MERCHANT:{order_id}:{order_code}")],
-                [InlineKeyboardButton("📞 Не удалось связаться", callback_data=f"cancel_reason:BUYER_NOT_REACHABLE:{order_id}:{order_code}")],
-                [InlineKeyboardButton("📦 Нет в наличии", callback_data=f"cancel_reason:MERCHANT_OUT_OF_STOCK:{order_id}:{order_code}")],
-                [InlineKeyboardButton("❌ Отмена", callback_data="cancel_action")]
-            ]
-            
-            await query.edit_message_text(
-                f"⚠️ <b>Отмена заказа #{order_code}</b>\n\n"
-                f"Выберите причину отмены:",
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-        
-        # Подтверждение отмены заказа с причиной
-        elif callback_data.startswith("cancel_reason:"):
-            if user_id not in self.admin_ids:
-                await query.answer("❌ Доступ запрещен", show_alert=True)
-                return
-            
-            parts = callback_data.split(":")
-            reason = parts[1]
-            order_id = parts[2]
-            order_code = parts[3]
-            
-            await self.handle_cancel_order(query, order_id, order_code, reason)
-            self.pending_confirmations.pop(user_id, None)
         
         # Подтверждение очистки БД
         elif callback_data == "confirm_clear_db":
@@ -729,48 +646,6 @@ class TelegramBot:
                 parse_mode='HTML'
             )
     
-    async def handle_cancel_order(self, query, order_id: str, order_code: str, reason: str):
-        """Обработка отмены заказа (только для админа)"""
-        try:
-            # Отправляем новое сообщение
-            await query.message.reply_text(
-                f"⏳ Отменяю заказ #{order_code}...",
-                parse_mode='HTML'
-            )
-            
-            # Удаляем кнопки с исходного сообщения
-            await query.edit_message_reply_markup(reply_markup=None)
-            
-            # Отменяем заказ через API
-            result = await self.order_service.cancel_order(order_id, order_code, reason)
-            
-            if result:
-                reason_text = {
-                    'BUYER_CANCELLATION_BY_MERCHANT': 'Отказ покупателя',
-                    'BUYER_NOT_REACHABLE': 'Не удалось связаться с покупателем',
-                    'MERCHANT_OUT_OF_STOCK': 'Товара нет в наличии'
-                }.get(reason, reason)
-                
-                await query.message.reply_text(
-                    f"✅ <b>Заказ #{order_code} отменен</b>\n\n"
-                    f"Причина: {reason_text}\n"
-                    f"Статус изменен на: CANCELLED",
-                    parse_mode='HTML'
-                )
-                logger.info(f"Заказ {order_code} отменен администратором. Причина: {reason}")
-            else:
-                await query.message.reply_text(
-                    f"❌ Ошибка при отмене заказа #{order_code}\n"
-                    f"Возможно заказ уже в другом статусе",
-                    parse_mode='HTML'
-                )
-        except Exception as e:
-            logger.error(f"Ошибка при отмене заказа {order_code}: {e}")
-            await query.message.reply_text(
-                f"❌ Произошла ошибка при отмене заказа #{order_code}:\n{str(e)}",
-                parse_mode='HTML'
-            )
-    
     async def handle_create_waybill(self, query, order_id: str, order_code: str):
         """Обработка формирования накладной"""
         try:
@@ -779,9 +654,6 @@ class TelegramBot:
                 f"⏳ Проверяю статус заказа #{order_code}...",
                 parse_mode='HTML'
             )
-            
-            # Удаляем кнопки с исходного сообщения
-            await query.edit_message_reply_markup(reply_markup=None)
             
             # Проверяем текущий статус заказа
             current_status = await self.order_service.check_order_status(order_id, order_code)
@@ -982,7 +854,6 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("waybills", self.waybills_command))
         
         # Админские команды
-        self.application.add_handler(CommandHandler("cancel_order", self.cancel_order_command))
         self.application.add_handler(CommandHandler("clear_db", self.clear_db_command))
         
         # Добавляем обработчик callback кнопок

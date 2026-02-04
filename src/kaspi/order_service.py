@@ -503,32 +503,6 @@ class OrderService:
             logger.error(f"❌ Ошибка при проверке статуса заказа {order_code}: {e}")
             return None
     
-    async def cancel_order(self, order_id: str, order_code: str, reason: str, comment: str = "") -> bool:
-        """
-        Отменить заказ через API
-        
-        Args:
-            order_id: ID заказа
-            order_code: Код заказа
-            reason: Причина отмены
-            comment: Дополнительный комментарий
-        
-        Returns:
-            True если успешно, False при ошибке
-        """
-        try:
-            result = await self.kaspi.cancel_order(order_id, order_code, reason, comment)
-            
-            # Обновляем статус в БД
-            self.db.update_order_status(order_code, 'CANCELLED')
-            
-            logger.info(f"✅ Заказ {order_code} успешно отменен")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка при отмене заказа {order_code}: {e}")
-            return False
-    
     def clear_database(self) -> int:
         """
         Очистить все данные из базы данных
