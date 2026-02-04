@@ -2,6 +2,7 @@
 Сервис для обработки заказов Kaspi
 """
 import logging
+import httpx
 from datetime import datetime
 from typing import List, Dict, Optional
 from src.kaspi.api_client import KaspiAPIClient
@@ -49,6 +50,31 @@ class OrderService:
         
         # Если неизвестный тип
         return f'📍 {delivery_mode}'
+    
+    async def _download_waybill_pdf(self, waybill_url: str) -> Optional[bytes]:
+        """
+        Скачать PDF накладной по URL
+        
+        Args:
+            waybill_url: URL накладной
+        
+        Returns:
+            Содержимое PDF как bytes или None при ошибке
+        """
+        try:
+            logger.info(f"Скачиваю PDF накладной из {waybill_url}")
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(waybill_url)
+                response.raise_for_status()
+                
+                pdf_content = response.content
+                logger.info(f"PDF накладной успешно скачан, размер: {len(pdf_content)} байт")
+                return pdf_content
+                
+        except Exception as e:
+            logger.error(f"Ошибка при скачивании PDF накладной: {e}")
+            return None
     
     async def get_new_orders(self) -> List[Dict]:
         """
@@ -208,6 +234,14 @@ class OrderService:
             # Проверяем экспресс-доставку
             is_express = attributes.get('express', False)
             
+            # Получаем URL накладной
+            waybill_url = attributes.get('waybill', '')
+            
+            # Скачиваем PDF накладной если есть URL
+            waybill_pdf_data = None
+            if waybill_url:
+                waybill_pdf_data = await self._download_waybill_pdf(waybill_url)
+            
             order_info = {
                 'id': order_id,
                 'code': attributes['code'],
@@ -230,7 +264,8 @@ class OrderService:
                 'warehouse_name': warehouse_info['name'] if warehouse_info else 'Не указан',
                 'warehouse_address': warehouse_info['address'] if warehouse_info else 'Адрес не указан',
                 'items': items,
-                'waybill_url': attributes.get('waybill', '')
+                'waybill_url': waybill_url,
+                'waybill_pdf_data': waybill_pdf_data  # Добавляем PDF данные
             }
             
             return order_info
@@ -259,6 +294,7 @@ class OrderService:
                 'is_kaspi_delivery': order_info['is_kaspi_delivery'],
                 'is_express': order_info.get('is_express', False),
                 'waybill_url': order_info.get('waybill_url', ''),
+                'waybill_pdf_data': order_info.get('waybill_pdf_data'),  # Добавляем PDF данные
                 'items': order_info.get('items', [])
             }
             
@@ -358,11 +394,16 @@ class OrderService:
             # Получаем код заказа из результата
             order_code = result.get('data', {}).get('attributes', {}).get('code')
             
+            # Скачиваем PDF накладной если есть URL
+            waybill_pdf_data = None
+            if waybill_url:
+                waybill_pdf_data = await self._download_waybill_pdf(waybill_url)
+            
             # Обновляем статус и URL накладной в БД
             if order_code:
                 self.db.update_order_status(order_code, 'ASSEMBLE')
                 if waybill_url:
-                    self.db.update_order_waybill(order_code, waybill_url)
+                    self.db.update_order_waybill(order_code, waybill_url, waybill_pdf_data)
             
             logger.info(f"✅ Накладная для заказа {order_id} сформирована")
             
@@ -404,9 +445,11 @@ class OrderService:
                 kaspi_delivery = attributes.get('kaspiDelivery', {})
                 waybill_url = kaspi_delivery.get('waybill')
             
-            # Если есть URL накладной, обновляем в БД
-            if waybill_url:
-                self.db.update_order_waybill(order_code, waybill_url)
+            # Скачиваем PDF если есть URL и его еще нет в БД
+            if waybill_url and not self.db.get_order_waybill_pdf(order_code):
+                waybill_pdf_data = await self._download_waybill_pdf(waybill_url)
+                if waybill_pdf_data:
+                    self.db.update_order_waybill(order_code, waybill_url, waybill_pdf_data)
             
             return {
                 'status': attributes.get('status'),

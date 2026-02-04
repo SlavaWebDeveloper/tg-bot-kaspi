@@ -3,6 +3,7 @@ Telegram бот для уведомлений о заказах
 """
 import logging
 import httpx
+import io
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -187,6 +188,46 @@ class TelegramBot:
         
         return '\n'.join(message_parts)
     
+    async def send_waybill_from_db(self, order_code: str, chat_id: str):
+        """
+        Отправить PDF накладную из БД
+        
+        Args:
+            order_code: Код заказа
+            chat_id: ID чата для отправки
+        """
+        try:
+            logger.info(f"Отправляю накладную для заказа {order_code} из БД")
+            
+            # Получаем PDF из БД
+            pdf_data = self.order_service.db.get_order_waybill_pdf(order_code)
+            
+            if not pdf_data:
+                await self.application.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ PDF накладной для заказа #{order_code} не найден в базе данных",
+                    parse_mode='HTML'
+                )
+                return
+            
+            # Отправляем как документ
+            await self.application.bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO(pdf_data),
+                filename=f"Накладная_{order_code}.pdf",
+                caption=f"📄 Накладная для заказа #{order_code}"
+            )
+            
+            logger.info(f"Накладная для заказа {order_code} успешно отправлена из БД")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при отправке накладной из БД: {e}")
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Не удалось отправить накладную для заказа #{order_code}",
+                parse_mode='HTML'
+            )
+    
     async def download_and_send_waybill(self, waybill_url: str, order_code: str, chat_id: str):
         """
         Скачать PDF накладную и отправить её в чат
@@ -206,10 +247,18 @@ class TelegramBot:
                 
                 pdf_content = response.content
                 
+                # Сохраняем PDF в БД
+                self.order_service.db.update_order_waybill(
+                    order_code=order_code,
+                    waybill_url=waybill_url,
+                    waybill_pdf_data=pdf_content
+                )
+                logger.info(f"PDF накладной для заказа {order_code} сохранен в БД")
+                
                 # Отправляем как документ
                 await self.application.bot.send_document(
                     chat_id=chat_id,
-                    document=pdf_content,
+                    document=io.BytesIO(pdf_content),
                     filename=f"Накладная_{order_code}.pdf",
                     caption=f"📄 Накладная для заказа #{order_code}"
                 )
@@ -418,6 +467,7 @@ class TelegramBot:
                 "Это действие:\n"
                 "• Удалит ВСЕ записи о заказах\n"
                 "• Удалит историю уведомлений\n"
+                "• Удалит все сохраненные PDF накладные\n"
                 "• НЕОБРАТИМО\n\n"
                 "Для подтверждения нажмите кнопку ниже, затем отправьте команду /clear_db повторно.",
                 parse_mode='HTML',
@@ -494,31 +544,18 @@ class TelegramBot:
         if callback_data.startswith("download_waybill:"):
             order_code = callback_data.split(":")[1]
             
-            # Получаем информацию о заказе из БД
-            orders = await self.order_service.get_active_orders()
-            order = next((o for o in orders if o['code'] == order_code), None)
+            await query.edit_message_text(
+                f"⏳ Получаю накладную для заказа #{order_code}...",
+                parse_mode='HTML'
+            )
             
-            if order and order.get('waybill_url'):
-                await query.edit_message_text(
-                    f"⏳ Скачиваю накладную для заказа #{order_code}...",
-                    parse_mode='HTML'
-                )
-                
-                await self.download_and_send_waybill(
-                    order['waybill_url'], 
-                    order_code,
-                    query.message.chat_id
-                )
-                
-                await query.edit_message_text(
-                    f"✅ Накладная для заказа #{order_code} отправлена",
-                    parse_mode='HTML'
-                )
-            else:
-                await query.edit_message_text(
-                    f"❌ Накладная для заказа #{order_code} не найдена",
-                    parse_mode='HTML'
-                )
+            # Сначала пробуем из БД
+            await self.send_waybill_from_db(order_code, query.message.chat_id)
+            
+            await query.edit_message_text(
+                f"✅ Накладная для заказа #{order_code} отправлена",
+                parse_mode='HTML'
+            )
         
         # Обработка принятия заказа
         elif callback_data.startswith("accept_order:"):
@@ -732,6 +769,10 @@ class TelegramBot:
                         parse_mode='HTML',
                         reply_markup=InlineKeyboardMarkup(keyboard)
                     )
+                    
+                    # Скачиваем и сохраняем PDF если его еще нет в БД
+                    if not self.order_service.db.get_order_waybill_pdf(order_code):
+                        await self.download_and_send_waybill(waybill_url, order_code, query.message.chat_id)
                 else:
                     message += "\nНакладная будет доступна в личном кабинете Kaspi."
                     await query.edit_message_text(message, parse_mode='HTML')
@@ -780,7 +821,7 @@ class TelegramBot:
                     f"Статус изменен на: ASSEMBLE (Передача)\n\n"
                 )
                 
-                # Если есть URL накладной, добавляем кнопки
+                # Если есть URL накладной, добавляем кнопки и скачиваем PDF
                 if waybill_url:
                     success_message += "Накладная доступна:"
                     keyboard = [[
@@ -792,6 +833,9 @@ class TelegramBot:
                         parse_mode='HTML',
                         reply_markup=InlineKeyboardMarkup(keyboard)
                     )
+                    
+                    # Скачиваем и сохраняем PDF
+                    await self.download_and_send_waybill(waybill_url, order_code, query.message.chat_id)
                 else:
                     success_message += "Накладная будет доступна в личном кабинете Kaspi через несколько минут."
                     await query.edit_message_text(

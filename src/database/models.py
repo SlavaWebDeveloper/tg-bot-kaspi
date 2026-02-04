@@ -3,6 +3,7 @@
 """
 import logging
 import json
+import base64
 from datetime import datetime
 from sqlalchemy import create_engine, Column, String, Integer, DateTime, Float, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
@@ -34,6 +35,7 @@ class Order(Base):
     is_kaspi_delivery = Column(Boolean, default=False)
     is_express = Column(Boolean, default=False)  # Экспресс-доставка
     waybill_url = Column(String)  # URL накладной
+    waybill_pdf = Column(Text)  # PDF накладной в base64
     items_json = Column(Text)  # JSON с товарами
     
     def __repr__(self):
@@ -56,6 +58,24 @@ class Order(Base):
             self.items_json = json.dumps(value, ensure_ascii=False)
         else:
             self.items_json = None
+    
+    @property
+    def waybill_pdf_bytes(self):
+        """Получить PDF как bytes"""
+        if self.waybill_pdf:
+            try:
+                return base64.b64decode(self.waybill_pdf)
+            except:
+                return None
+        return None
+    
+    @waybill_pdf_bytes.setter
+    def waybill_pdf_bytes(self, value):
+        """Сохранить PDF из bytes"""
+        if value:
+            self.waybill_pdf = base64.b64encode(value).decode('utf-8')
+        else:
+            self.waybill_pdf = None
 
 
 class Database:
@@ -87,11 +107,15 @@ class Database:
             
             # Извлекаем items отдельно для обработки
             items = order_data.pop('items', None)
+            # Извлекаем waybill_pdf_data если есть
+            waybill_pdf_data = order_data.pop('waybill_pdf_data', None)
             
             if order is None:
                 order = Order(**order_data)
                 if items:
                     order.items = items
+                if waybill_pdf_data:
+                    order.waybill_pdf_bytes = waybill_pdf_data
                 session.add(order)
             else:
                 # Обновляем существующий заказ
@@ -99,6 +123,8 @@ class Database:
                     setattr(order, key, value)
                 if items:
                     order.items = items
+                if waybill_pdf_data:
+                    order.waybill_pdf_bytes = waybill_pdf_data
             
             session.commit()
         except Exception as e:
@@ -145,18 +171,31 @@ class Database:
         finally:
             session.close()
     
-    def update_order_waybill(self, order_code: str, waybill_url: str):
-        """Обновить URL накладной для заказа"""
+    def update_order_waybill(self, order_code: str, waybill_url: str, waybill_pdf_data: bytes = None):
+        """Обновить URL накладной и PDF для заказа"""
         session = self.get_session()
         try:
             order = session.query(Order).filter_by(code=order_code).first()
             if order:
                 order.waybill_url = waybill_url
+                if waybill_pdf_data:
+                    order.waybill_pdf_bytes = waybill_pdf_data
                 session.commit()
         except Exception as e:
             session.rollback()
-            logger.error(f"Ошибка при обновлении URL накладной {order_code}: {e}")
+            logger.error(f"Ошибка при обновлении накладной {order_code}: {e}")
             raise e
+        finally:
+            session.close()
+    
+    def get_order_waybill_pdf(self, order_code: str) -> bytes:
+        """Получить PDF накладной из БД"""
+        session = self.get_session()
+        try:
+            order = session.query(Order).filter_by(code=order_code).first()
+            if order:
+                return order.waybill_pdf_bytes
+            return None
         finally:
             session.close()
     
