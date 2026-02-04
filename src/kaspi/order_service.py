@@ -25,19 +25,30 @@ class OrderService:
     
     def _get_delivery_type_text(self, delivery_mode: str, is_kaspi_delivery: bool) -> str:
         """Получить текстовое описание типа доставки"""
-        delivery_types = {
-            'DELIVERY_LOCAL': 'По городу',
-            'DELIVERY_PICKUP': 'Самовывоз' if not is_kaspi_delivery else 'Kaspi Postomat',
-            'DELIVERY_REGIONAL_TODOOR': 'Kaspi Доставка',
-            'DELIVERY_REGIONAL_PICKUP': 'Доставка по области (самовывоз)'
-        }
+        # Определяем тип доставки согласно документации Kaspi
+        if delivery_mode == 'DELIVERY_LOCAL':
+            if is_kaspi_delivery:
+                return 'Kaspi Доставка (по городу)'
+            else:
+                return 'Доставка по городу (своими силами)'
         
-        delivery_text = delivery_types.get(delivery_mode, delivery_mode)
+        elif delivery_mode == 'DELIVERY_PICKUP':
+            if is_kaspi_delivery:
+                return 'Kaspi Postomat'
+            else:
+                return 'Самовывоз'
         
-        if is_kaspi_delivery and delivery_mode == 'DELIVERY_LOCAL':
-            delivery_text += ' (Kaspi Доставка)'
+        elif delivery_mode == 'DELIVERY_REGIONAL_TODOOR':
+            if is_kaspi_delivery:
+                return 'Kaspi Доставка (по области)'
+            else:
+                return 'Доставка по области'
         
-        return delivery_text
+        elif delivery_mode == 'DELIVERY_REGIONAL_PICKUP':
+            return '🏪 Самовывоз (доставка по области до склада)'
+        
+        # Если неизвестный тип
+        return f'📍 {delivery_mode}'
     
     async def get_new_orders(self) -> List[Dict]:
         """
@@ -48,12 +59,11 @@ class OrderService:
         """
         try:
             logger.info("🔍 Запрашиваем заказы у Kaspi API...")
-            logger.info("Фильтры: status=['APPROVED_BY_BANK', 'ACCEPTED_BY_MERCHANT'], state=['NEW', 'PICKUP', 'DELIVERY', 'KASPI_DELIVERY']")
+            logger.info("Фильтры: status=['APPROVED_BY_BANK', 'ACCEPTED_BY_MERCHANT']")
+            logger.info("Это автоматически исключает: COMPLETED, CANCELLED, ARCHIVE")
             
-            # Получаем заказы со статусами, которые нужно обработать
             response = await self.kaspi.get_orders(
-                status=['APPROVED_BY_BANK', 'ACCEPTED_BY_MERCHANT'],
-                state=['NEW', 'PICKUP', 'DELIVERY', 'KASPI_DELIVERY']
+                status=['APPROVED_BY_BANK', 'ACCEPTED_BY_MERCHANT']
             )
             
             orders_data = response.get('data', [])
@@ -83,16 +93,27 @@ class OrderService:
                     logger.info(f"    ⏭️  Пропускаем - уже обработан ранее")
                     continue
                 
-                logger.info(f"    ✅ Новый заказ! Получаем детальную информацию...")
+                # Определяем завершен ли заказ
+                is_completed = order_status in ['COMPLETED', 'CANCELLED', 'CANCELLING'] or order_state == 'ARCHIVE'
                 
                 # Получаем полную информацию о заказе
+                logger.info(f"    ✅ Получаем информацию о заказе...")
                 order_info = await self._get_full_order_info(order)
                 
-                if order_info:
-                    new_orders.append(order_info)
-                    logger.info(f"    ✓ Информация получена")
-                else:
+                if not order_info:
                     logger.warning(f"    ⚠️  Не удалось получить полную информацию")
+                    continue
+                
+                # Сохраняем ВСЕ заказы в БД
+                self.save_order_to_db(order_info)
+                self.mark_order_notified(order_code)
+                
+                # Но в список для УВЕДОМЛЕНИЙ добавляем только активные
+                if is_completed:
+                    logger.info(f"    📝 Сохранен в БД без уведомления - заказ завершен")
+                else:
+                    logger.info(f"    ✓ Сохранен в БД, будет отправлено уведомление")
+                    new_orders.append(order_info)
             
             logger.info(f"🎯 Итого новых заказов для обработки: {len(new_orders)}")
             return new_orders
@@ -126,6 +147,33 @@ class OrderService:
             for item in items_data:
                 item_attrs = item['attributes']
                 
+                # Получаем описание товара через правильный endpoint
+                product_description = ""
+                try:
+                    product_info = await self.kaspi.get_product_description(item['id'])
+                    product_attrs = product_info.get('data', {}).get('attributes', {})
+                    
+                    # Формируем описание из product endpoint
+                    desc_parts = []
+                    
+                    # Название товара
+                    if product_attrs.get('name'):
+                        desc_parts.append(product_attrs['name'])
+                    
+                    # Бренд
+                    if product_attrs.get('manufacturer'):
+                        desc_parts.append(f"Бренд: {product_attrs['manufacturer']}")
+                    
+                    # Код товара в Kaspi (БЕЗ префикса "Код:")
+                    if product_attrs.get('code'):
+                        desc_parts.append(product_attrs['code'])
+                    
+                    product_description = " | ".join(desc_parts) if desc_parts else ""
+                    
+                except Exception as e:
+                    logger.debug(f"Описание товара недоступно: {e}")
+                    product_description = ""
+                
                 # Получаем информацию о складе для первого товара
                 if warehouse_info is None:
                     try:
@@ -147,6 +195,7 @@ class OrderService:
                 
                 items.append({
                     'name': item_attrs.get('category', {}).get('title', 'Товар'),
+                    'description': product_description,
                     'quantity': item_attrs.get('quantity', 1),
                     'price': item_attrs.get('basePrice', 0),
                     'total_price': item_attrs.get('totalPrice', 0)
@@ -155,6 +204,9 @@ class OrderService:
             # Формируем полную информацию о заказе
             customer = attributes.get('customer', {})
             delivery_address = attributes.get('deliveryAddress', {})
+            
+            # Проверяем экспресс-доставку
+            is_express = attributes.get('express', False)
             
             order_info = {
                 'id': order_id,
@@ -171,6 +223,7 @@ class OrderService:
                 ),
                 'delivery_address': delivery_address.get('formattedAddress', 'Самовывоз'),
                 'is_kaspi_delivery': attributes.get('isKaspiDelivery', False),
+                'is_express': is_express,
                 'planned_delivery_date': self._format_timestamp(attributes.get('plannedDeliveryDate')),
                 'creation_date': self._format_timestamp(attributes.get('creationDate')),
                 'warehouse_id': warehouse_info['id'] if warehouse_info else '',
@@ -201,8 +254,12 @@ class OrderService:
                 'delivery_address': order_info['delivery_address'],
                 'warehouse_id': order_info['warehouse_id'],
                 'warehouse_name': order_info['warehouse_name'],
+                'warehouse_address': order_info['warehouse_address'],
                 'planned_delivery_date': order_info['planned_delivery_date'],
-                'is_kaspi_delivery': order_info['is_kaspi_delivery']
+                'is_kaspi_delivery': order_info['is_kaspi_delivery'],
+                'is_express': order_info.get('is_express', False),
+                'waybill_url': order_info.get('waybill_url', ''),
+                'items': order_info.get('items', [])
             }
             
             self.db.save_order(order_data)
@@ -230,6 +287,7 @@ class OrderService:
             orders = self.db.get_active_orders()
             return [
                 {
+                    'id': order.id,
                     'code': order.code,
                     'status': order.status,
                     'state': order.state,
@@ -237,11 +295,161 @@ class OrderService:
                     'customer_phone': order.customer_phone,
                     'total_price': order.total_price,
                     'warehouse_name': order.warehouse_name,
+                    'warehouse_address': order.warehouse_address,
                     'delivery_address': order.delivery_address,
-                    'planned_delivery_date': order.planned_delivery_date
+                    'planned_delivery_date': order.planned_delivery_date,
+                    'creation_date': order.created_at,
+                    'is_kaspi_delivery': order.is_kaspi_delivery,
+                    'is_express': getattr(order, 'is_express', False),
+                    'waybill_url': order.waybill_url,
+                    'items': order.items 
                 }
                 for order in orders
             ]
         except Exception as e:
             logger.error(f"Ошибка при получении активных заказов: {e}")
             return []
+    
+    async def accept_order(self, order_id: str, order_code: str) -> bool:
+        """
+        Принять заказ через API
+        
+        Args:
+            order_id: ID заказа
+            order_code: Код заказа
+        
+        Returns:
+            True если успешно, False при ошибке
+        """
+        try:
+            result = await self.kaspi.accept_order(order_id, order_code)
+            
+            # Обновляем статус в БД
+            self.db.update_order_status(order_code, 'ACCEPTED_BY_MERCHANT')
+            
+            logger.info(f"✅ Заказ {order_code} успешно принят")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при принятии заказа {order_code}: {e}")
+            return False
+    
+    async def create_waybill(self, order_id: str, number_of_spaces: int = 1) -> Dict:
+        """
+        Сформировать накладную для заказа (изменить статус на ASSEMBLE)
+        
+        Args:
+            order_id: ID заказа
+            number_of_spaces: Количество мест в заказе
+        
+        Returns:
+            Словарь с результатом (waybill_url если есть) или False при ошибке
+        """
+        try:
+            result = await self.kaspi.change_order_status(
+                order_id=order_id,
+                status='ASSEMBLE',
+                number_of_space=number_of_spaces
+            )
+            
+            # Извлекаем URL накладной если он есть в ответе
+            waybill_url = result.get('data', {}).get('attributes', {}).get('waybill')
+            
+            # Получаем код заказа из результата
+            order_code = result.get('data', {}).get('attributes', {}).get('code')
+            
+            # Обновляем статус и URL накладной в БД
+            if order_code:
+                self.db.update_order_status(order_code, 'ASSEMBLE')
+                if waybill_url:
+                    self.db.update_order_waybill(order_code, waybill_url)
+            
+            logger.info(f"✅ Накладная для заказа {order_id} сформирована")
+            
+            return {
+                'success': True,
+                'waybill_url': waybill_url
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при формировании накладной для заказа {order_id}: {e}")
+            return False
+    
+    async def check_order_status(self, order_id: str, order_code: str) -> Dict:
+        """
+        Проверить текущий статус заказа
+        
+        Args:
+            order_id: ID заказа
+            order_code: Код заказа
+        
+        Returns:
+            Словарь с информацией о статусе заказа или None при ошибке
+        """
+        try:
+            # Получаем заказ по коду
+            response = await self.kaspi.get_order_by_code(order_code)
+            orders = response.get('data', [])
+            
+            if not orders:
+                logger.warning(f"Заказ {order_code} не найден")
+                return None
+            
+            order = orders[0]
+            attributes = order.get('attributes', {})
+            
+            # Проверяем наличие накладной для Kaspi Доставки
+            waybill_url = None
+            if attributes.get('isKaspiDelivery'):
+                kaspi_delivery = attributes.get('kaspiDelivery', {})
+                waybill_url = kaspi_delivery.get('waybill')
+            
+            # Если есть URL накладной, обновляем в БД
+            if waybill_url:
+                self.db.update_order_waybill(order_code, waybill_url)
+            
+            return {
+                'status': attributes.get('status'),
+                'state': attributes.get('state'),
+                'waybill_url': waybill_url,
+                'is_kaspi_delivery': attributes.get('isKaspiDelivery', False)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при проверке статуса заказа {order_code}: {e}")
+            return None
+    
+    async def cancel_order(self, order_id: str, order_code: str, reason: str, comment: str = "") -> bool:
+        """
+        Отменить заказ через API
+        
+        Args:
+            order_id: ID заказа
+            order_code: Код заказа
+            reason: Причина отмены
+            comment: Дополнительный комментарий
+        
+        Returns:
+            True если успешно, False при ошибке
+        """
+        try:
+            result = await self.kaspi.cancel_order(order_id, order_code, reason, comment)
+            
+            # Обновляем статус в БД
+            self.db.update_order_status(order_code, 'CANCELLED')
+            
+            logger.info(f"✅ Заказ {order_code} успешно отменен")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отмене заказа {order_code}: {e}")
+            return False
+    
+    def clear_database(self) -> int:
+        """
+        Очистить все данные из базы данных
+        
+        Returns:
+            Количество удаленных записей
+        """
+        return self.db.clear_all_orders()

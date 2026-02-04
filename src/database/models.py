@@ -1,12 +1,15 @@
 """
 Модели базы данных
 """
+import logging
+import json
 from datetime import datetime
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Float, Boolean
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Float, Boolean, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 Base = declarative_base()
+logger = logging.getLogger(__name__)
 
 
 class Order(Base):
@@ -24,13 +27,35 @@ class Order(Base):
     delivery_address = Column(String)
     warehouse_id = Column(String)
     warehouse_name = Column(String)
+    warehouse_address = Column(String)
     planned_delivery_date = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     notified_at = Column(DateTime)
     is_kaspi_delivery = Column(Boolean, default=False)
+    is_express = Column(Boolean, default=False)  # Экспресс-доставка
+    waybill_url = Column(String)  # URL накладной
+    items_json = Column(Text)  # JSON с товарами
     
     def __repr__(self):
         return f"<Order(code={self.code}, status={self.status})>"
+    
+    @property
+    def items(self):
+        """Получить товары из JSON"""
+        if self.items_json:
+            try:
+                return json.loads(self.items_json)
+            except:
+                return []
+        return []
+    
+    @items.setter
+    def items(self, value):
+        """Сохранить товары в JSON"""
+        if value:
+            self.items_json = json.dumps(value, ensure_ascii=False)
+        else:
+            self.items_json = None
 
 
 class Database:
@@ -60,13 +85,20 @@ class Database:
         try:
             order = session.query(Order).filter_by(code=order_data['code']).first()
             
+            # Извлекаем items отдельно для обработки
+            items = order_data.pop('items', None)
+            
             if order is None:
                 order = Order(**order_data)
+                if items:
+                    order.items = items
                 session.add(order)
             else:
                 # Обновляем существующий заказ
                 for key, value in order_data.items():
                     setattr(order, key, value)
+                if items:
+                    order.items = items
             
             session.commit()
         except Exception as e:
@@ -91,9 +123,54 @@ class Database:
         session = self.get_session()
         try:
             orders = session.query(Order).filter(
-                Order.status.in_(['APPROVED_BY_BANK', 'ACCEPTED_BY_MERCHANT']),
+                Order.status.in_(['APPROVED_BY_BANK', 'ACCEPTED_BY_MERCHANT', 'ASSEMBLE']),
                 Order.state.in_(['NEW', 'PICKUP', 'DELIVERY', 'KASPI_DELIVERY'])
             ).all()
             return orders
+        finally:
+            session.close()
+    
+    def update_order_status(self, order_code: str, new_status: str):
+        """Обновить статус заказа в БД"""
+        session = self.get_session()
+        try:
+            order = session.query(Order).filter_by(code=order_code).first()
+            if order:
+                order.status = new_status
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при обновлении статуса заказа {order_code}: {e}")
+            raise e
+        finally:
+            session.close()
+    
+    def update_order_waybill(self, order_code: str, waybill_url: str):
+        """Обновить URL накладной для заказа"""
+        session = self.get_session()
+        try:
+            order = session.query(Order).filter_by(code=order_code).first()
+            if order:
+                order.waybill_url = waybill_url
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при обновлении URL накладной {order_code}: {e}")
+            raise e
+        finally:
+            session.close()
+    
+    def clear_all_orders(self) -> int:
+        """Удалить все заказы из БД"""
+        session = self.get_session()
+        try:
+            count = session.query(Order).count()
+            session.query(Order).delete()
+            session.commit()
+            return count
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Ошибка при очистке БД: {e}")
+            raise e
         finally:
             session.close()
