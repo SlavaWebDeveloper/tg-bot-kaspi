@@ -64,16 +64,36 @@ class OrderService:
         try:
             logger.info(f"Скачиваю PDF накладной из {waybill_url}")
             
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(waybill_url)
+            # Используем те же заголовки что и для API, включая токен авторизации
+            headers = {
+                'X-Auth-Token': self.kaspi.api_token,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/pdf,*/*',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8'
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(waybill_url, headers=headers)
                 response.raise_for_status()
                 
                 pdf_content = response.content
+                
+                # Проверяем что это действительно PDF
+                if not pdf_content.startswith(b'%PDF'):
+                    logger.error(f"Полученный файл не является PDF. Первые 100 байт: {pdf_content[:100]}")
+                    return None
+                
                 logger.info(f"PDF накладной успешно скачан, размер: {len(pdf_content)} байт")
                 return pdf_content
                 
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP ошибка при скачивании PDF накладной: {e.response.status_code}")
+            logger.error(f"Ответ сервера: {e.response.text[:500]}")
+            return None
         except Exception as e:
-            logger.error(f"Ошибка при скачивании PDF накладной: {e}")
+            logger.error(f"Ошибка при скачивании PDF накладной: {type(e).__name__}: {e}")
             return None
     
     async def get_new_orders(self) -> List[Dict]:
@@ -382,21 +402,41 @@ class OrderService:
             Словарь с результатом (waybill_url если есть) или False при ошибке
         """
         try:
+            # Шаг 1: Изменяем статус на ASSEMBLE
             result = await self.kaspi.change_order_status(
                 order_id=order_id,
                 status='ASSEMBLE',
                 number_of_space=number_of_spaces
             )
             
-            # Извлекаем URL накладной если он есть в ответе
-            waybill_url = result.get('data', {}).get('attributes', {}).get('waybill')
+            logger.info(f"Статус заказа {order_id} изменен на ASSEMBLE")
             
-            # Получаем код заказа из результата
-            order_code = result.get('data', {}).get('attributes', {}).get('code')
+            # Шаг 2: Получаем информацию о заказе для получения URL накладной
+            # Kaspi API не возвращает waybill сразу, нужно запросить заказ отдельно
+            import asyncio
+            await asyncio.sleep(2)  # Даем время Kaspi сгенерировать накладную
+            
+            order_info = await self.kaspi.get_order_by_id(order_id)
+            attributes = order_info.get('data', {}).get('attributes', {})
+            
+            # Получаем код заказа
+            order_code = attributes.get('code')
+            
+            # Получаем URL накладной
+            waybill_url = attributes.get('waybill')
+            
+            # Если URL накладной еще не готов, пробуем еще раз через 3 секунды
+            if not waybill_url:
+                logger.info(f"Накладная еще не готова, ожидаю 3 секунды...")
+                await asyncio.sleep(3)
+                order_info = await self.kaspi.get_order_by_id(order_id)
+                attributes = order_info.get('data', {}).get('attributes', {})
+                waybill_url = attributes.get('waybill')
             
             # Скачиваем PDF накладной если есть URL
             waybill_pdf_data = None
             if waybill_url:
+                logger.info(f"Скачиваю PDF накладной по URL: {waybill_url}")
                 waybill_pdf_data = await self._download_waybill_pdf(waybill_url)
             
             # Обновляем статус и URL накладной в БД
@@ -404,8 +444,9 @@ class OrderService:
                 self.db.update_order_status(order_code, 'ASSEMBLE')
                 if waybill_url:
                     self.db.update_order_waybill(order_code, waybill_url, waybill_pdf_data)
-            
-            logger.info(f"✅ Накладная для заказа {order_id} сформирована")
+                    logger.info(f"✅ Накладная для заказа {order_code} сформирована и сохранена")
+                else:
+                    logger.warning(f"⚠️ Накладная для заказа {order_code} сформирована, но URL еще не доступен")
             
             return {
                 'success': True,

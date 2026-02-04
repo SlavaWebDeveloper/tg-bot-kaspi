@@ -240,12 +240,33 @@ class TelegramBot:
         try:
             logger.info(f"Скачиваю накладную для заказа {order_code} из {waybill_url}")
             
+            # Используем токен авторизации для скачивания
+            headers = {
+                'X-Auth-Token': self.order_service.kaspi.api_token,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/pdf,*/*',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8'
+            }
+            
             # Скачиваем PDF
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(waybill_url)
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(waybill_url, headers=headers)
                 response.raise_for_status()
                 
                 pdf_content = response.content
+                
+                # Проверяем что это действительно PDF
+                if not pdf_content.startswith(b'%PDF'):
+                    logger.error(f"Полученный файл не является PDF")
+                    await self.application.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"❌ Файл по ссылке не является PDF накладной.\n"
+                             f"Попробуйте скачать по <a href=\"{waybill_url}\">прямой ссылке</a>",
+                        parse_mode='HTML'
+                    )
+                    return
                 
                 # Сохраняем PDF в БД
                 self.order_service.db.update_order_waybill(
@@ -265,8 +286,18 @@ class TelegramBot:
                 
                 logger.info(f"Накладная для заказа {order_code} успешно отправлена")
                 
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP ошибка при скачивании накладной: {e.response.status_code}")
+            logger.error(f"Ответ сервера: {e.response.text[:500]}")
+            
+            await self.application.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Не удалось скачать накладную для заказа #{order_code} (код {e.response.status_code}).\n"
+                     f"Попробуйте скачать по <a href=\"{waybill_url}\">прямой ссылке</a>",
+                parse_mode='HTML'
+            )
         except Exception as e:
-            logger.error(f"Ошибка при скачивании/отправке накладной: {e}")
+            logger.error(f"Ошибка при скачивании/отправке накладной: {type(e).__name__}: {e}")
 
             await self.application.bot.send_message(
                 chat_id=chat_id,

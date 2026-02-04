@@ -137,6 +137,28 @@ class KaspiAPIClient:
             logger.error(f"Ошибка при получении заказа {order_code}: {e}")
             raise
     
+    async def get_order_by_id(self, order_id: str) -> Dict:
+        """
+        Получить информацию о заказе по его ID
+        
+        Args:
+            order_id: ID заказа
+        
+        Returns:
+            Словарь с данными о заказе
+        """
+        try:
+            async with httpx.AsyncClient(timeout=60.0, verify=True) as client:
+                response = await client.get(
+                    f"{self.base_url}/orders/{order_id}",
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as e:
+            logger.error(f"Ошибка при получении заказа по ID {order_id}: {e}")
+            raise
+    
     async def get_order_items(self, order_id: str) -> Dict:
         """
         Получить товары в заказе
