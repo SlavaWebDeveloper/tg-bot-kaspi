@@ -20,7 +20,7 @@ class Config:
     KASPI_API_URL = os.getenv('KASPI_API_URL', 'https://kaspi.kz/shop/api/v2')
     
     # Настройки опроса
-    POLL_INTERVAL_MINUTES = int(os.getenv('POLL_INTERVAL_MINUTES', '30'))
+    POLL_INTERVAL_MINUTES = int(os.getenv('POLL_INTERVAL_MINUTES', '10'))
     
     # Период запроса заказов (максимум 14 дней для Kaspi API)
     ORDERS_DAYS_BACK = int(os.getenv('ORDERS_DAYS_BACK', '14'))
