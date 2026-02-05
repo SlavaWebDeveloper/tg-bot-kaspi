@@ -329,10 +329,10 @@ class KaspiAPIClient:
         payload = {
             "data": {
                 "type": "orders",
-                "id": order_code, 
+                "id": str(order_code),
                 "attributes": {
                     "status": status,
-                    "numberOfSpace": number_of_space
+                    "numberOfSpace": str(number_of_space)
                 }
             }
         }
