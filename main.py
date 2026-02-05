@@ -36,8 +36,8 @@ def setup_logging():
     logging.getLogger('apscheduler').setLevel(logging.WARNING)
     
     # Убираем детальные логи из order_service (оставляем только важное)
-    logging.getLogger('src.kaspi.order_service').setLevel(logging.WARNING)
-    logging.getLogger('src.kaspi.api_client').setLevel(logging.WARNING)
+    logging.getLogger('src.kaspi.order_service').setLevel(logging.INFO)
+    logging.getLogger('src.kaspi.api_client').setLevel(logging.INFO)
 
 
 def main():
