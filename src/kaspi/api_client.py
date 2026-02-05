@@ -313,8 +313,8 @@ class KaspiAPIClient:
         except Exception as e:
             logger.error(f"Ошибка при принятии заказа {order_id}: {e}")
             raise
-    
-    async def change_order_status(self, order_id: str, status: str, number_of_space: int = 1) -> Dict:
+
+    async def change_order_status(self, order_code: str, status: str, number_of_space: int = 1) -> Dict:
         """
         Изменить статус заказа (например, для формирования накладной)
         
@@ -329,7 +329,7 @@ class KaspiAPIClient:
         payload = {
             "data": {
                 "type": "orders",
-                "id": order_id,
+                "id": order_code, 
                 "attributes": {
                     "status": status,
                     "numberOfSpace": number_of_space
@@ -340,12 +340,9 @@ class KaspiAPIClient:
         url = f"{self.base_url}/orders"
         
         logger.info(f"=== ИЗМЕНЕНИЕ СТАТУСА ЗАКАЗА ===")
-        logger.info(f"URL: {url}")
-        logger.info(f"Order ID: {order_id}")
+        logger.info(f"Order Code: {order_code}")
         logger.info(f"Новый статус: {status}")
-        logger.info(f"Количество мест: {number_of_space}")
         logger.info(f"Payload: {payload}")
-        logger.info(f"Headers: {self.headers}")
         
         try:
             async with httpx.AsyncClient(timeout=60.0, verify=True) as client:
@@ -356,20 +353,14 @@ class KaspiAPIClient:
                 )
                 
                 logger.info(f"Response Status: {response.status_code}")
-                logger.info(f"Response Headers: {dict(response.headers)}")
-                logger.info(f"Response Body: {response.text}")
-                
                 response.raise_for_status()
-                logger.info(f"✅ Статус заказа {order_id} изменен на {status}")
+                logger.info(f"✅ Статус заказа {order_code} изменен на {status}")
                 return response.json()
                 
         except httpx.HTTPStatusError as e:
             logger.error(f"❌ HTTP Error {e.response.status_code}")
-            logger.error(f"Request URL: {e.request.url}")
-            logger.error(f"Request Headers: {dict(e.request.headers)}")
-            logger.error(f"Request Body: {e.request.content}")
-            logger.error(f"Response Body: {e.response.text}")
+            logger.error(f"Response: {e.response.text}")
             raise
         except Exception as e:
-            logger.error(f"❌ Unexpected error: {type(e).__name__}: {e}")
+            logger.error(f"❌ Error: {type(e).__name__}: {e}")
             raise

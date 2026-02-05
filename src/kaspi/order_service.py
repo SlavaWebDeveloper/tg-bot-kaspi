@@ -403,8 +403,11 @@ class OrderService:
         """
         try:
             # Шаг 1: Изменяем статус на ASSEMBLE
+            import base64
+            order_code = base64.b64decode(order_id).decode('utf-8')
+
             result = await self.kaspi.change_order_status(
-                order_id=order_id,
+                order_code=order_code,  
                 status='ASSEMBLE',
                 number_of_space=number_of_spaces
             )
