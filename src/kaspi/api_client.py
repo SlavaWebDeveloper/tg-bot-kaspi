@@ -337,16 +337,39 @@ class KaspiAPIClient:
             }
         }
         
+        url = f"{self.base_url}/orders"
+        
+        logger.info(f"=== ИЗМЕНЕНИЕ СТАТУСА ЗАКАЗА ===")
+        logger.info(f"URL: {url}")
+        logger.info(f"Order ID: {order_id}")
+        logger.info(f"Новый статус: {status}")
+        logger.info(f"Количество мест: {number_of_space}")
+        logger.info(f"Payload: {payload}")
+        logger.info(f"Headers: {self.headers}")
+        
         try:
             async with httpx.AsyncClient(timeout=60.0, verify=True) as client:
                 response = await client.post(
-                    f"{self.base_url}/orders",
+                    url,
                     headers=self.headers,
                     json=payload
                 )
+                
+                logger.info(f"Response Status: {response.status_code}")
+                logger.info(f"Response Headers: {dict(response.headers)}")
+                logger.info(f"Response Body: {response.text}")
+                
                 response.raise_for_status()
-                logger.info(f"Статус заказа {order_id} изменен на {status}")
+                logger.info(f"✅ Статус заказа {order_id} изменен на {status}")
                 return response.json()
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ HTTP Error {e.response.status_code}")
+            logger.error(f"Request URL: {e.request.url}")
+            logger.error(f"Request Headers: {dict(e.request.headers)}")
+            logger.error(f"Request Body: {e.request.content}")
+            logger.error(f"Response Body: {e.response.text}")
+            raise
         except Exception as e:
-            logger.error(f"Ошибка при изменении статуса заказа {order_id}: {e}")
+            logger.error(f"❌ Unexpected error: {type(e).__name__}: {e}")
             raise
